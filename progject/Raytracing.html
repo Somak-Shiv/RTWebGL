@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+  <meta charset="UTF-8" />
+  <script id="vertex-shader" type="x-shader/x-vertex">
+    attribute vec2 vPosition;
+    varying vec2 fPosition;
+
+    void main()
+    {
+        fPosition = vPosition;
+        gl_Position = vec4(vPosition, 0.0, 1.0);
+    }
+  </script>
+
+  <script id="fragment-shader" type="x-shader/x-fragment">
+    precision highp float;
+    varying vec2 fPosition;
+
+    const int maxObjs = 10;
+    const int maxBounces = 1000;
+    const int numSpheres = 7;
+    const int numPlanes = 6;
+
+
+    uniform float alpha;
+    uniform float num_bounces;
+    float cameraLocation = 2.0;
+    const float PI = 3.14159265358979323846264;
+
+    struct Ray
+    {
+        vec3 origin;
+        vec3 direction;
+        float intensity;
+    };
+
+    struct Sphere
+    {
+        vec3 center;
+        float radius;
+        vec3 color;
+        float reflectivity;
+    };
+
+    struct Plane
+    {
+        vec3 point;
+        vec3 normal;
+        vec3 color;
+        float reflectivity;
+    };
+
+    struct Light
+    {
+        vec3 position;
+        vec3 ambient, diffuse, specular;
+    };
+
+    struct RayTracerOutput
+    {
+        Ray reflectedRay;
+        vec3 color;
+    };
+
+    Light light;
+    Sphere spheres[maxObjs];
+    Plane planes[maxObjs];
+
+    // Function to check if the ray intersects the sphere
+    float checkSphereIntersection(Sphere sphere, Ray ray)
+    {
+        // sphere intersection calculations
+        vec3 sphereCenter = sphere.center;
+        float radius = sphere.radius;
+        vec3 cameraSource = ray.origin;
+        vec3 cameraDirection = ray.direction;
+
+        // Quadratic equation calculations
+        vec3 distanceFromCenter = (cameraSource - sphereCenter);
+        float B = 2.0 * dot(cameraDirection, distanceFromCenter);
+        float C = dot(distanceFromCenter, distanceFromCenter) - pow(radius, 2.0);
+        // Calculate the discriminant
+        float delta = pow(B, 2.0) - 4.0 * C;
+        float t = 0.0;
+        // Calculate the intersection of the ray with the sphere
+        if (delta > 0.0) {
+            // Two intersections
+            float sqRoot = sqrt(delta);
+            float t1 = (-B + sqRoot) / 2.0;
+            float t2 = (-B - sqRoot) / 2.0;
+            t = min(t1, t2);
+        }
+        if (delta == 0.0) {
+            // One intersection
+            t = -B / 2.0;
+        }
+
+        return t;
+    }
+
+    // Function to check if the ray intersects the plane
+    float checkPlaneIntersection(Plane plane, Ray ray)
+    {
+        // Calculate the intersection of the ray with the plane
+        float numerator = dot(plane.point - ray.origin, plane.normal);
+        float denominator = dot(ray.direction, plane.normal);
+        if (denominator == 0.0) return 0.0;
+        return (numerator / denominator);
+    }
+
+    // checks if a ray intersects a world object before the light
+    bool intersectsBeforeLight(Ray ray)
+    {
+        float distanceToLight = distance(ray.origin, light.position);
+
+        // Ray intersection for sphere before light
+        for (int i = 0; i < maxObjs; i++) {
+            if (i >= numSpheres) break;
+            float t = checkSphereIntersection(spheres[i], ray);
+            if (t > 0.0 && t < distanceToLight) {
+                // if sphere is between the ray and the light
+                return true;
+            }
+        }
+
+        // Ray intersection for plane before light
+        for (int i = 0; i < maxObjs; i++) {
+            if (i >= numPlanes) break;
+            float t = checkPlaneIntersection(planes[i], ray);
+            if (t > 0.0 && t < distanceToLight) {
+                // if plane is between the ray and the light
+                return true;
+            }
+        }
+        // if no intersection before light
+        return false;
+    }
+
+
+    // Function to trace the ray and calculate the color
+    RayTracerOutput traceRay(Ray ray)
+    {
+        // var declarations
+        // minT is the minimum distance to the intersection
+        float minT = 10000000000.0;
+        int typeToShow = 0; // 0 for nothing, 1 for sphere, 2 for plane
+        Sphere sphere;
+        Plane plane;
+
+        // sphere intersection testing and finding the closest sphere
+        for (int i = 0; i < maxObjs; i++) {
+            if (i >= numSpheres) break;
+            float t = checkSphereIntersection(spheres[i], ray);
+            if (t > 0.0 && t < minT) {
+                minT = t;
+                sphere = spheres[i];
+                typeToShow = 1;
+            }
+        }
+
+        // wall intersection testing and finding the closest wall
+        for (int i = 0; i < maxObjs; i++) {
+            if (i >= numPlanes) break;
+            float t = checkPlaneIntersection(planes[i], ray);
+            if (t > 0.0 && t < minT) {
+                minT = t;
+                plane = planes[i];
+                typeToShow = 2;
+            }
+        }
+
+        // ray color & reflection calculations
+        RayTracerOutput rayTracer;
+        vec3 color = vec3(0.0, 0.0, 0.0);
+        if (typeToShow > 0) {
+            
+            // surface point, normal, color, reflectivity calculations
+            vec3 surfacePoint = ray.origin + (minT * ray.direction);
+            vec3 surfaceNormal;
+            vec3 objColor;
+            float reflectivity;
+            if (typeToShow == 1) {
+                // if sphere
+                surfaceNormal = normalize(surfacePoint - sphere.center);
+                objColor = sphere.color;
+                reflectivity = sphere.reflectivity;
+            } else if (typeToShow == 2) {
+                // if plane
+                surfaceNormal = plane.normal;
+                objColor = plane.color;
+                reflectivity = plane.reflectivity;
+            }
+
+            // Ambient light calculations
+            color += light.ambient * objColor;
+
+            // shadow calculations from ray
+            vec3 L = normalize(light.position - surfacePoint);
+            Ray shadowRay;
+            shadowRay.origin = surfacePoint + 0.00001 * L;
+            shadowRay.direction = L;
+            // if no intersection before light, add diffuse and specular light
+            if (!intersectsBeforeLight(shadowRay)) {
+                vec3 N = surfaceNormal;
+
+                // Diffuse light addition to color
+                color += light.diffuse * objColor * max(0.0, dot(L, N));
+
+                // Specular light addition to color
+                float shininess = 50.0;
+                vec3 R = reflect(-L, N);
+                vec3 C = normalize(ray.origin - surfacePoint);
+                float specular = pow(max(dot(R, C), 0.0), shininess);
+                color += light.specular * specular * reflectivity;
+            }
+
+            // Reflection calculations
+            Ray reflectionRay;
+            vec3 reflection = reflect(ray.direction, surfaceNormal);
+            reflectionRay.origin = surfacePoint + 0.00001 * reflection;
+            reflectionRay.direction = reflection;
+            reflectionRay.intensity = ray.intensity * reflectivity;
+            rayTracer.reflectedRay = reflectionRay;
+        }
+        // final color calculation
+        rayTracer.color = color * ray.intensity;
+
+        return rayTracer;
+    }
+
+    void createRoom()
+    {
+        // Using the structures of planes to create the walls, floor, and ceiling
+
+        // Left
+        planes[0].color = vec3(0.9, 0.7, 0.7);
+        planes[0].reflectivity = 0.1;
+        planes[0].point = vec3(-2.0, 0.0, 0.0);
+        planes[0].normal = vec3(1.0, 0.0, 0.0);
+
+        // Right
+        planes[1].color = vec3(0.7, 0.9, 0.7);
+        planes[1].reflectivity = 0.1;
+        planes[1].point = vec3(2.0, 0.0, 0.0);
+        planes[1].normal = vec3(-1.0, 0.0, 0.0);
+
+        // Front
+        planes[2].color = vec3(0.7, 0.7, 0.9);
+        planes[2].reflectivity = 0.1;
+        planes[2].point = vec3(0.0, 0.0, -4.0);
+        planes[2].normal = vec3(0.0, 0.0, 1.0);
+
+        // Back
+        planes[3].color = vec3(0.7, 0.7, 0.9);
+        planes[3].reflectivity = 0.1;
+        planes[3].point = vec3(0.0, 0.0, 4.0);
+        planes[3].normal = vec3(0.0, 0.0, -1.0);
+
+        // Floor
+        planes[4].color = vec3(0.9, 0.9, 0.9);
+        planes[4].reflectivity = 0.05;
+        planes[4].point = vec3(0.0, -1.0, 0.0);
+        planes[4].normal = vec3(0.0, 1.0, 0.0);
+
+        // Roof
+        planes[5].color = vec3(0.0, 1.0, 1.0);
+        planes[5].reflectivity = 0.05;
+        planes[5].point = vec3(0.0,2.0, 0.0);
+        planes[5].normal = vec3(0.0, -1.0, 0.0);
+    }
+
+    // Function to initialize the ray
+    Ray initializeRay()
+    {
+        // Create the ray and set the origin and direction
+        Ray ray;
+        ray.origin = vec3(0.0, 0.0, cameraLocation);
+        ray.direction = normalize(vec3(fPosition, -cameraLocation));
+        ray.intensity = 1.0;
+        return ray;
+    }
+
+    // Sphere creation for the scene
+    void createSpheres()
+    {
+
+        //Using the structures of spheres to create the spheres in the scene
+
+        // Sphere 1 (back-left)
+        spheres[0].color = vec3(1.0, 1.0, 1.0);
+        spheres[0].reflectivity = 0.9;
+        spheres[0].center = vec3(-.8, .3, -2.2); // On floor (floor at y=-1)
+        spheres[0].radius = 0.3;
+
+        // Sphere 2 (middle)
+        spheres[1].color = vec3(0.0, 1.0, 0.0);
+        spheres[1].reflectivity = 0.5;
+        spheres[1].center = vec3(0.0, -.2, -1.5);
+        spheres[1].radius = 0.3;
+
+        // Sphere 3 (far right)
+        spheres[2].color = vec3(0.0, 0.0, 1.0);
+        spheres[2].reflectivity = 0.8;
+        spheres[2].center = vec3(1.0, 0.0, -1.0); // floating above floor
+        spheres[2].radius = .3;
+
+        // Sphere 4 (middle right)
+        spheres[3].color = vec3(1.0, 1.0, 1.0);
+        spheres[3].reflectivity = 1.0;
+        spheres[3].center = vec3(.6, -.4, -.5);
+        spheres[3].radius = .2;
+
+        // Sphere 5 right upper
+        spheres[4].color = vec3(.5, .5, .5);
+        spheres[4].reflectivity = 1.0;
+        spheres[4].center = vec3(.5, 0.6, 0);
+        spheres[4].radius = .3;
+
+        // Sphere 6 right upper but closer and a little bigger
+        spheres[5].color = vec3(.5, .5, .5);
+        spheres[5].reflectivity = 1.0;
+        spheres[5].center = vec3(.5, .6, 2.0);
+        spheres[5].radius = .5;
+        
+        // Sphere 7 all the way in the back
+        spheres[6].color = vec3(.5, .5, .5);
+        spheres[6].reflectivity = 1.0;
+        spheres[6].center = vec3( -1.0, -.6, -3.5);
+        spheres[6].radius = .2;
+    }
+
+    // Function to render the scene
+    void renderScene()
+    {
+        // Adjust lighting to emphasize num_bounces
+        light.ambient = vec3(0.1, 0.1, 0.1);
+        light.diffuse = vec3(0.6, 0.6, 0.6);
+        light.specular = vec3(1.0, 1.0, 1.0);
+        light.position = vec3(-.2, 1.8, 0.5);
+        createRoom();
+        createSpheres();
+    }
+
+    void main() 
+    {
+        // Render the setup of the scene
+        renderScene();
+
+        // Initialize the ray to be traced
+        Ray ray = initializeRay();
+
+        // calculate thee ray color
+        vec3 color = vec3(0.0, 0.0, 0.0);
+        for (int i = 0; i <= maxBounces; i++) {
+            if (i > int(num_bounces)) break;
+            RayTracerOutput rayTracer = traceRay(ray);
+            color += rayTracer.color;
+            ray = rayTracer.reflectedRay;
+        }
+        gl_FragColor = vec4(color, 1.0);
+    }
+</script>
+  <script src="../Common/webgl-utils.js"></script>
+  <script src="../Common/initShaders.js"></script>
+  <script src="../Common/MV.js"></script>
+  <script src="raytracer.js"></script>
+</head>
+<body>
+  <div>
+    <span id="fps">FPS: </span>
+    <label for="number-bounces">Number of Bounces:</label>
+    <input type="number" min="0" max="1000" step="1" value="0" id="number-bounces" name="number-bounces">
+  </div>
+  <canvas width="600" height="600">
+    Please use a browser that supports the "canvas" tag.
+  </canvas>
+</div>
+</body>
+
+</html>
